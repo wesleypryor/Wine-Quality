@@ -1,0 +1,301 @@
+\documentclass[letterpaper]{article}
+\input{helper/header} 
+
+\usepackage{amssymb}
+
+\title{Final Project}
+%\subtitle{}
+\dueDate{2016-12-12}
+\studentName{Wesley Pryor}
+
+
+\begin{document}
+<<echo=FALSE, eval=TRUE, include=FALSE>>=
+library(knitr)
+knitr::opts_chunk$set(echo=TRUE, eval=TRUE, include=TRUE, tidy=TRUE, results='tex', fig.width=4, fig.asp=1, fig.align='center')
+render_listings()
+
+#Libraries
+library(kknn)
+library(class)
+library(party)
+library(rpart)
+library(rattle)
+library(exact2x2)
+library(e1071)
+library(rpart.plot)
+library(mlbench)
+library(nnet)
+library(kernlab)
+library(microbenchmark)
+library(flexclust)
+library(pROC)
+library(ggplot2)
+library(MASS)
+
+#Functions from Lab 02
+OptLeastSquares <- function(X,Y){
+  beta.hat <- (solve(t(X)%*%X)%*%t(X)%*%Y)
+  return(beta.hat)
+}
+
+residuals <- function(X,Y){
+  e <- Y-X%*%OptLeastSquares(X,Y)
+  return(e)
+}
+
+sigma.hat <- function(X,Y){
+  s <- sqrt(1/(nrow(X)-ncol(X))*sum(residuals(X,Y)^2))
+  return(s)
+}
+
+Cov.beta.hat <- function(X,Y){
+  cvbtht <- sigma.hat(X,Y)^2*solve(t(X)%*%X)
+  return(cvbtht)
+}
+
+#F-test calculation
+f.test=function(model0,model){
+  e02=sum((model0$residuals)^2)   
+  e2=sum((model$residuals)^2)     
+  df0=model0$df.residual          
+  df=model$df.residual            
+  
+  f.stat=((e02-e2)/(df0-df))/(e2/df)
+  
+  p.value=pf(f.stat,
+             df1=df0-df,
+             df2=df,
+             lower.tail=FALSE)
+  
+  return(list(f.stat=f.stat,p.value=p.value))
+}
+
+#Brown Forsythe Test
+brown.forsythe <- function(e,X){
+  m <- median(X)
+  e.1 <- e[X<=m]
+  e.2 <- e[X>m]
+  n.1 <- length(e.1)
+  n.2 <- length(e.2)
+  e.1.tilde <- median(e.1)
+  e.2.tilde <- median(e.2)
+  d.1 <- abs(e.1-e.1.tilde)
+  d.2 <- abs(e.2-e.2.tilde)
+  s.p.squared <- (sum((d.1-mean(d.1))^2)+sum((d.2-mean(d.2))^2))/(n.1+n.2-2)
+  t <- (mean(d.1)-mean(d.2))/(sqrt(s.p.squared)*sqrt((1/n.1)+(1/n.2)))
+  p.value <- 2*pt(t,df = n.1+n.2-2,lower.tail = TRUE)
+  return(list(t=t,p.value = p.value))
+}
+
+#Box cox function
+box.cox <- function(Y,X,lambdarange){
+  k.2 <- (prod(Y^(1/length(Y))))
+  res.sum.squares <- NULL
+  for(i in 1:length(lambdarange)){
+      if(lambdarange[i]!=0){
+        k.1 <- 1/(lambdarange[i]*k.2^(lambdarange[i]-1))
+        W <- k.1*(Y^lambdarange[i]-1)
+      } else{
+        W <- k.2*(log(Y))
+      }
+    W <- as.vector(W)
+    temp.model <- lm(W~X)
+    res.sum.squares[i] <- sum(temp.model$residuals^2)
+  }
+  optimal.rss.location <- which.min(res.sum.squares)
+  optimal.lambda <- lambdarange[optimal.rss.location]
+  return(lamba=optimal.lambda)
+}
+@
+
+\section*{Data Introduction}
+For this rpoject, I have chosen the white wine set of data from the Wine Quality dataset. This set of data comes from the UCI Machine Learning Repository. The wines come from Portugal and are variants of the \textit{Vinho Verde} wine. The wines in the data were tested for certain factors of each wine. The set has twelve attributes. The attributes are fixed acidity, volatile acidity, citric acid, residual sugar, chlorides, free sulfur dioxide, total sulfur dioxide, density, pH, sulphates, and alcohol. The final attribute is quality. Quality was assesed by wien experts and calculated based on a median value of scores from 0 (very poor) to 10 (extremely excellent). In the data most of the values of quality are between 5 and 7. There are a few 3 values and fewer 9 values. The quality attribute is the value that will be predicted in the following models. The practical application of these proposed models is to predict how well a wine will taste and be received by consumers based upon the chemical makeup of the wine. If a winery can rpedict the quality of a wine, they will know if it is a higher quality, the company should prodcue more wine.I first tested the data to see how it behaves naturally and I ran histograms on all 12 attributes. The histograms were printed as follows:
+<<echo=FALSE>>=
+#Importing Dataset
+WhiteData <- read.csv("~/Data Mining 1 Fall 2016/FinalProject/winequality-white.csv", sep=";")
+attach(WhiteData)
+quality <- as.factor(WhiteData$quality)
+
+#Histograms of the Data
+par(mfrow=c(2,2), oma = c(1,1,0,0) + 0.1, mar = c(3,3,1,1) + 0.1)
+barplot((table(quality)), col=c("slateblue4", "slategray", "slategray1", "slategray2", "slategray3", "skyblue4"))
+mtext("Quality", side=1, outer=F, line=2, cex=0.8)
+truehist(fixed.acidity, h = 0.5, col="slategray3")
+mtext("Fixed Acidity", side=1, outer=F, line=2, cex=0.8)
+truehist(volatile.acidity, h = 0.05, col="slategray3")
+mtext("Volatile Acidity", side=1, outer=F, line=2, cex=0.8)
+truehist(citric.acid, h = 0.1, col="slategray3")
+mtext("Citric Acid", side=1, outer=F, line=2, cex=0.8)
+
+truehist(residual.sugar, h = 0.5, col="slategray3")
+mtext("Residual Sugar", side=1, outer=F, line=2, cex=0.8)
+truehist(chlorides, h = 0.05, col="slategray3")
+mtext("Chlorides", side=1, outer=F, line=2, cex=0.8)
+truehist(free.sulfur.dioxide, h = 0.1, col="slategray3")
+mtext("Free Sulfur Dioxide", side=1, outer=F, line=2, cex=0.8)
+truehist(total.sulfur.dioxide, h = 0.5, col="slategray3")
+mtext("Total Sulfur Dioxide", side=1, outer=F, line=2, cex=0.8)
+
+truehist(density, h = 0.05, col="slategray3")
+mtext("Density", side=1, outer=F, line=2, cex=0.8)
+truehist(pH, h = 0.1, col="slategray3")
+mtext("pH", side=1, outer=F, line=2, cex=0.8)
+truehist(sulphates, h = 0.5, col="slategray3")
+mtext("Sulphates", side=1, outer=F, line=2, cex=0.8)
+truehist(alcohol, h = 0.5, col="slategray3")
+mtext("Alcohol", side=1, outer=F, line=2, cex=0.8)
+
+par(mfrow=c(1,1))
+@
+
+\section*{Linear Models}
+With further testing using boxplots. There were some extreme outliers in citric acid, fixed acidity, and volatile acidity categories. I first ran a linear model with all attributes in the data to predict quality. This was just an inital test to see how the data behaved and if any changes were needed to enhance the model to predict quality. The plots of the residuals and predicted Y values showed correlation with the predictions.  The first Root Mean Square Error produced a value of 0.77. This was a good RMSE, however, the model needed to be changed based on thegraphs that I saw. The graphs showed obvious correlation. I used the box cox transformation to change the values by making the exponents of the quality vector to be 0.68. The adjusted values reduced the RMSE to 0.29. I aslo tested a step model to try to reduce the variables. This model included alcohol, volatile acidity, residual sugar, free sulfur dioxide, sulphates, chlorides, and pH. However, after running and F-test, the p-value was extremely small. Therefore, we could say that the step model was not better than the model with all the attributes.
+
+\section*{Decision Trees}
+I also wanted to incorporate more models. THerefore I decided to run decision trees with the data. The decision tree that was calculated hap a depth of 4 and was initially calculated to have an RMSE of 0.02344. The model was then cross-validated using ten fold cross validation. This method of cross validation resulted in an average RMSE of 0.02011. The low RMSE values show the method of R Part decision trees is a very good method. This shows that decision trees predict the quality of white wines with all attributes very well. 
+
+\section*{K nearest enighbors}
+I also decided to incorporate more data mining techniques and run K nearest neighbors. The method was done with 3 nearest neighbors. I thought that this would be a good method. I had to change the value of the residuals from factor to integers to calculate the RMSE. After calculating the RMSE, the value was 2.0374. This was extremely high compared to the other models where I was getting an RMSE close to zero. Once I saw this, I decided to stop trying to fix this model because I had other models that performed exponentially better than this method. 
+
+\section*{Neural Networks}
+I also wanted to try one more technique that I have learned from data mining to find the best model. However, a naive run of this neural network was even higher than a test of K nearest neighbors. Therefore, I decided to not continue with this model. 
+
+\section*{Conclusion}
+I believe that the ordinary least quares linear model and the decision trees were the best models that can predict the quality of wine. I believe that the decision trees was the most practical model. It is a model that wine developers can follow to determine how well the wine will perform. Iff wine developers want to create successful wines repeatedly, then they cna use the decision trees to see where a wine will be predicted for quality with confidence in the accuracy of the model. With cross-validation of the model we saw that decision were definiely the best model and became a reliable model. Other models found were reliable as well. 
+
+\section*{Code Appendix}
+<<>>=
+#Preparing the Data for outliers
+limout <- rep(0,11)
+for (i in 1:11){
+  t1 <- quantile(WhiteData[,i], 0.75)
+  t2 <- IQR(WhiteData[,i], 0.75)
+  limout[i] <- t1 + 1.5*t2
+}
+WhiteWineIndex <- matrix(0, 4898, 11)
+for (i in 1:4898)
+  for (j in 1:11){
+    if (WhiteData[i,j] > limout[j]) WhiteWineIndex[i,j] <- 1
+  }
+WWInd <- apply(WhiteWineIndex, 1, sum)
+WhiteWineTemp <- cbind(WWInd, WhiteData)
+Indexes <- rep(0, 208)
+j <- 1
+for (i in 1:4898){
+  if (WWInd[i] > 0) {Indexes[j]<- i
+  j <- j + 1}
+  else j <- j
+}
+WhiteWineLib <-WhiteData[-Indexes,]
+
+X.1 <- WhiteWineLib[,1]
+X.2 <- WhiteWineLib[,2]
+X.3 <- WhiteWineLib[,3]
+X.4 <- WhiteWineLib[,4]
+X.5 <- WhiteWineLib[,5]
+X.6 <- WhiteWineLib[,6]
+X.7 <- WhiteWineLib[,7]
+X.8 <- WhiteWineLib[,8]
+X.9 <- WhiteWineLib[,9]
+X.10 <- WhiteWineLib[,10]
+X.11 <- WhiteWineLib[,11]
+
+X <- cbind(X.1,X.2,X.3,X.4,X.5,X.6,X.7,X.8,X.9,X.10,X.11)
+Y <- WhiteWineLib[,12]
+
+#Split of Data into training and testing data
+set.seed(1506)
+index <- sample(1:nrow(WhiteWineLib), size = round(0.7*nrow(WhiteWineLib),0))
+wine.train <- WhiteWineLib[index,]
+wine.test <- WhiteWineLib[-index,]
+
+#Linear Model Initial Application
+linmodel <- lm(quality~., data=wine.train)
+summary(linmodel)
+
+Y.hat <- predict(linmodel, newdata = wine.test)
+e <- wine.test$quality-Y.hat
+plot(Y.hat,e)
+plot(Y.hat, wine.test$quality)
+RMSE <- sqrt(mean(e^2))
+
+#Step application to determine the best predictors for quality
+stepmod <- step(lm(quality ~ 1, wine.train), scope=list(lower=~1,  upper = ~fixed.acidity+volatile.acidity+citric.acid+residual.sugar+chlorides+free.sulfur.dioxide+total.sulfur.dioxide+pH+sulphates+alcohol), direction="forward", trace = FALSE)
+step.model <- lm(quality~ alcohol+volatile.acidity+residual.sugar+free.sulfur.dioxide+sulphates+chlorides+pH, data = wine.train)
+
+#F.test for normal and step model
+f.test(step.model,linmodel)
+
+#Box-Cox Transformation
+lambdarang <- seq(-3,3,0.1)
+box.cox(Y,X,lambdarang)
+
+lambdarange <- seq(0.5,1.5,0.01)
+box.cox(Y,X,lambdarange)
+
+Y.tilde <- Y^0.68
+adj.model <- lm(Y.tilde~X.1+X.2+X.3+X.4+X.5+X.6+X.7+X.8+X.9+X.10+X.11)
+Y.tilde.hat <- predict(adj.model)
+e.tilde <- Y.tilde-Y.tilde.hat
+plot(Y.tilde.hat , Y.tilde)
+plot(Y.tilde,e.tilde)
+
+adj.RMSE <- sqrt(mean(e.tilde^2))
+
+#Decision Trees
+wine.tree <- rpart(quality~., data = wine.train)
+fancyRpartPlot(wine.tree)
+wine.pred <- predict(wine.tree, newdata=wine.test)
+tree.RMSE <- sqrt(mean(wine.test$quality-wine.pred)^2)
+
+#Cross Validation
+createfolds=function(n,K){
+  reps=ceiling(n/K)
+  non_rand_folds = rep(1:K,reps) 
+  non_rand_folds = non_rand_folds[1:n] 
+  folds=sample(non_rand_folds) 
+  return(folds[1:n])
+}
+kflval <- function(k,data){
+  folds = createfolds(nrow(data),k)
+  accvector = 1:k
+  for(k in 1:k){
+    temptrain = data[folds!=k,]
+    temptest = data[folds==k,]
+    temptree = rpart(quality~.,data=temptrain)
+    temppred = predict(temptree, newdata=temptest)
+    analysis = sqrt(mean(temptest$quality-temppred)^2)
+    accvector[k] = analysis
+  }
+  return(mean(accvector))
+}
+
+kflval(10,WhiteData)
+
+#K nearest neighbors
+x = WhiteData[,1:11]
+xbar = apply(x,2,mean)
+xbarMat = cbind(rep(1,nrow(WhiteData)))%*%xbar
+s = apply(x,2,sd)
+sMat = cbind(rep(1,nrow(WhiteData)))%*%s
+z = (x-xbarMat)/sMat
+Y = WhiteData$quality
+z = cbind(z,Y)
+
+z.split <- sample(nrow(z),round(nrow(z)*0.7,0))
+z.train <- z[z.split,]
+z.test <- z[-z.split,]
+
+wine.knn <- knn(train = z.train, test = z.test, k=3, cl = Y[z.split])
+wine.knn <- as.integer(wine.knn)
+residual.knn <- Y[-z.split]-wine.knn
+knn.RMSE <- sqrt(mean(residual.knn^2))
+
+#Neural Networks
+wine.nnet <- nnet(quality~.,data=wine.train,size=10,linout=FALSE, maxit = 500)
+pred.nnet <- predict(wine.nnet, newdata = wine.test)
+nnet.residuals <- wine.test$quality-pred.nnet
+nnet.RMSE <- sqrt(mean(nnet.residuals^2))
+@
+\end{document}
